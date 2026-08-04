@@ -4,7 +4,6 @@ import os
 import subprocess
 import tempfile
 import re
-import time
 from email.message import EmailMessage
 from html import escape as html_escape
 from pathlib import Path
@@ -233,35 +232,11 @@ def _prepare_rich_bodies(subject, text_body, html_body):
     return plain_body, rich_body, []
 
 
-def _save_open_message_as_draft(subject, retries=10, delay_seconds=0.5):
-    """Ask Mail to save the matching open outgoing message as a draft."""
-    if not subject:
-        return False
-
-    safe_subject = escape_applescript(subject)
-    script = f'''
-    tell application "Mail"
-        try
-            set matchingMessages to every outgoing message whose subject is "{safe_subject}"
-            if (count of matchingMessages) is 0 then
-                return "not-found"
-            end if
-            save item 1 of matchingMessages
-            return "saved"
-        on error errMsg
-            return "error: " & errMsg
-        end try
-    end tell
-    '''
-
-    for _ in range(retries):
-        result = run_applescript(script).strip().lower()
-        if result == "saved":
-            return True
-        if result.startswith("error:"):
-            break
-        time.sleep(delay_seconds)
-    return False
+_SAVE_AS_DRAFT_UNSUPPORTED_NOTE = (
+    "save_as_draft could not be honored: Mail opens a `.eml` file as a read-only message "
+    "viewer, not a compose object, so there is no draft for Mail to save here. Use "
+    "compose_email(mode=\"draft\") or manage_drafts for a real, sendable HTML draft instead."
+)
 
 
 @mcp.tool()
@@ -295,7 +270,10 @@ def create_rich_email_draft(
         bcc: Optional BCC recipients, comma-separated for multiple
         output_path: Optional path for the generated `.eml` file
         open_in_mail: If True, open the generated `.eml` in Mail (default: True)
-        save_as_draft: If True, ask Mail to save the opened compose window into Drafts (default: False)
+        save_as_draft: Not currently supported. Mail opens a `.eml` as a read-only message
+            viewer, not a compose object, so it can never be saved into Drafts this way.
+            Passing True is reported honestly in the output rather than silently ignored;
+            use `compose_email(mode="draft")` or `manage_drafts` for a real, sendable draft.
         from_address: Optional sender address to stamp into the `.eml` `From:` header. Must be one of the account's configured email addresses. When omitted, Mail fills the account's default "Send new messages from" address on open.
 
     Returns:
@@ -351,12 +329,10 @@ def create_rich_email_draft(
     draft_path.write_bytes(bytes(message))
 
     opened = False
-    saved = False
+    save_requested = open_in_mail and save_as_draft
     if open_in_mail:
         subprocess.run(["open", "-a", "Mail", str(draft_path)], check=True)
         opened = True
-        if save_as_draft:
-            saved = _save_open_message_as_draft(subject)
 
     output_lines = ["RICH EMAIL DRAFT", "", "✓ Rich draft prepared successfully!", ""]
     output_lines.append("Account: " + account)
@@ -364,7 +340,9 @@ def create_rich_email_draft(
     output_lines.append("EML path: " + str(draft_path))
     output_lines.append("Opened in Mail: " + ("yes" if opened else "no"))
     if open_in_mail:
-        output_lines.append("Saved in Drafts: " + ("yes" if saved else "no"))
+        output_lines.append("Saved in Drafts: no")
+        if save_requested:
+            output_lines.append("Note: " + _SAVE_AS_DRAFT_UNSUPPORTED_NOTE)
     if sender_address:
         output_lines.append("From: " + sender_address)
     if recipients_to:
