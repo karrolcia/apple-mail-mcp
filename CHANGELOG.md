@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- Removed the redundant `plugin/commands/email-management.md` slash command.
+  It shadowed `plugin/skills/email-management/` under the same
+  `apple-mail:email-management` listing key, so every session showed two
+  near-duplicate entries with different descriptions (#82). Claude Code
+  invokes skills directly as slash commands, so `/email-management` still
+  works via the skill alone.
+
 ## [3.2.0] - 2026-07-04
 
 ### Added

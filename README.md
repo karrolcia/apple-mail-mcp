@@ -248,8 +248,7 @@ apple-mail-mcp/
 ├── plugin/                    # Claude Code plugin
 │   ├── .claude-plugin/
 │   │   └── plugin.json        # Plugin manifest
-│   ├── commands/              # /email-management slash command
-│   ├── skills/                # Email Management Expert skill
+│   ├── skills/                # Email Management Expert skill (also invocable as /email-management)
 │   ├── apple_mail_mcp/        # Python MCP server package (24 tools)
 │   ├── apple_mail_mcp.py      # Entry point
 │   ├── start_mcp.sh           # Startup wrapper (auto-creates venv)
