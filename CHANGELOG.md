@@ -14,6 +14,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   near-duplicate entries with different descriptions (#82). Claude Code
   invokes skills directly as slash commands, so `/email-management` still
   works via the skill alone.
+- `create_rich_email_draft`'s `save_as_draft` no longer claims or silently
+  retries a save that can never succeed. Mail opens a `.eml` as a read-only
+  message viewer, not a compose object, so the AppleScript `every outgoing
+  message whose subject is ...` query can never match it — the old retry
+  loop always returned `False` after ~5s of polling (#83). The tool now
+  skips the futile retry and reports plainly that `save_as_draft` isn't
+  supported for this workflow, pointing to `compose_email(mode="draft")` or
+  `manage_drafts` for a real, sendable HTML draft.
 
 ## [3.2.0] - 2026-07-04
 

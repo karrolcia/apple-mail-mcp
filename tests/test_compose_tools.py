@@ -70,18 +70,17 @@ class ComposeToolTests(unittest.TestCase):
             self.assertIn("Missing details: subject, to, body", result)
             self.assertIn("Opened in Mail: no", result)
 
-    def test_create_rich_email_draft_can_save_to_drafts(self):
+    def test_create_rich_email_draft_reports_save_as_draft_honestly(self):
+        # An opened `.eml` is a read-only Mail viewer, not a compose object, so
+        # save_as_draft can never actually succeed (#83) — the tool must say so
+        # plainly instead of implying the draft was saved.
         with tempfile.TemporaryDirectory() as tmpdir:
             output_path = Path(tmpdir) / "saved.eml"
-            run_results = ["sender@example.com", "saved"]
-
-            def fake_run_applescript(script, timeout=120):
-                return run_results.pop(0)
 
             with (
                 patch(
                     "apple_mail_mcp.tools.compose.run_applescript",
-                    side_effect=fake_run_applescript,
+                    return_value="sender@example.com",
                 ),
                 patch("apple_mail_mcp.tools.compose.subprocess.run"),
             ):
@@ -93,7 +92,29 @@ class ComposeToolTests(unittest.TestCase):
                     save_as_draft=True,
                 )
 
-            self.assertIn("Saved in Drafts: yes", result)
+            self.assertIn("Saved in Drafts: no", result)
+            self.assertIn("save_as_draft could not be honored", result)
+
+    def test_create_rich_email_draft_omits_save_note_when_not_requested(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "unsaved.eml"
+
+            with (
+                patch(
+                    "apple_mail_mcp.tools.compose.run_applescript",
+                    return_value="sender@example.com",
+                ),
+                patch("apple_mail_mcp.tools.compose.subprocess.run"),
+            ):
+                result = compose_tools.create_rich_email_draft(
+                    account="Work",
+                    subject="Unsaved Draft",
+                    output_path=str(output_path),
+                    open_in_mail=True,
+                )
+
+            self.assertIn("Saved in Drafts: no", result)
+            self.assertNotIn("save_as_draft could not be honored", result)
 
 
 class StripCdataTests(unittest.TestCase):
