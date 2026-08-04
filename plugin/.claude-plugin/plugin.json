@@ -6,9 +6,6 @@
     "name": "Patrick Freyer",
     "email": "freyer.patrick@bcg.com"
   },
-  "commands": [
-    "./commands/"
-  ],
   "mcpServers": {
     "apple-mail": {
       "command": "/bin/bash",
