@@ -134,13 +134,23 @@ def get_awaiting_reply(
     """
     escaped_account = escape_applescript(account)
 
-    # Body of the inbox-collection loop. A reply to a message sent within
-    # `days_back` must itself have arrived within `days_back`, so bounding the
-    # inbox scan to the same window loses nothing semantically. Unbounded, this
-    # loop fetched two properties for EVERY inbox message (~9k on a long-lived
-    # Gmail account => ~18k AppleEvent round-trips) and the tool timed out
-    # before returning anything. `get_needs_response` below uses the same
-    # bounded-scan idiom.
+    # Body of the inbox-collection loop. Unbounded, this loop fetched two
+    # properties for EVERY inbox message (~9k on a long-lived Gmail account
+    # => ~18k AppleEvent round-trips) and the tool timed out before returning
+    # anything. `get_needs_response` below uses the same bounded-scan idiom.
+    #
+    # Bounding the inbox to the same window as the sent scan never hides a
+    # genuine reply: a reply to something sent within `days_back` must itself
+    # have arrived within `days_back`. It does change one case. The matcher
+    # below places no ordering constraint between the sent message and the
+    # inbox message it matches, and both sides are prefix-stripped, so a
+    # thread OPENER older than the window used to satisfy the match as well —
+    # a sent "Re: Budget" was suppressed by the correspondent's original
+    # "Budget" from 30 days ago, even where they never actually replied.
+    # Those sent messages are now reported. The change is one-directional
+    # (the reported set only grows, never shrinks) and the new entries are
+    # true positives for the question this tool asks: she sent last, so the
+    # reply is owed to her.
     if days_back > 0:
         inbox_collect_body = f"""
                     set msgDate to date received of aMessage
@@ -151,11 +161,13 @@ def get_awaiting_reply(
                         set staleRun to 0
 {_INBOX_COLLECT_PROPS}
                     end if"""
+        stale_run_init = "\n            set staleRun to 0"
     else:
         # days_back=0 means "all time": no cutoff variable exists, so the
         # count cap is the only bound. (Indentation here is cosmetic.)
         inbox_collect_body = f"""
 {_INBOX_COLLECT_PROPS}"""
+        stale_run_init = ""
 
     noreply_filter = ""
     if exclude_noreply:
@@ -200,8 +212,7 @@ def get_awaiting_reply(
             set inboxSubjects to {{}}
             set inboxSenders to {{}}
             set inboxMessages to every message of inboxMailbox
-            set inboxScanned to 0
-            set staleRun to 0
+            set inboxScanned to 0{stale_run_init}
             set inboxCapHit to false
 
             repeat with aMessage in inboxMessages
