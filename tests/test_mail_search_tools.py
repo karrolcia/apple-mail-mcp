@@ -503,6 +503,69 @@ class SmartInboxToolTests(unittest.TestCase):
         )
         self.assertIn('"HIGH (" & flagLabel & " + question)"', captured["script"])
 
+    @staticmethod
+    def _awaiting_reply_script(**kwargs):
+        captured = {}
+
+        def fake_run(script, timeout=120):
+            captured["script"] = script
+            return "no results"
+
+        with patch(
+            "apple_mail_mcp.tools.smart_inbox.run_applescript", side_effect=fake_run
+        ):
+            smart_inbox_tools.get_awaiting_reply(account="Work", **kwargs)
+
+        return captured["script"]
+
+    def test_get_awaiting_reply_bounds_inbox_scan_by_date(self):
+        """The inbox cross-reference must stop at the date cutoff.
+
+        Unbounded, this loop fetched two properties for every message in the
+        inbox, which timed out on large mailboxes before returning anything.
+        """
+        script = self._awaiting_reply_script(days_back=14)
+
+        # date received is fetched first so out-of-window messages cost one
+        # round-trip instead of three.
+        self.assertIn("set msgDate to date received of aMessage", script)
+        self.assertIn("if msgDate < cutoffDate then", script)
+        self.assertIn(
+            f"if staleRun > {smart_inbox_tools.INBOX_STALE_RUN_LIMIT} then exit repeat",
+            script,
+        )
+        # Subject/sender are only fetched for in-window messages.
+        self.assertIn("set end of inboxSubjects to lowerBase", script)
+
+    def test_get_awaiting_reply_caps_inbox_scan_count(self):
+        """A hard count cap bounds cost independently of the date cutoff."""
+        for days_back in (14, 0):
+            with self.subTest(days_back=days_back):
+                script = self._awaiting_reply_script(days_back=days_back)
+                self.assertIn("set inboxScanned to inboxScanned + 1", script)
+                self.assertIn(
+                    f"if inboxScanned > {smart_inbox_tools.INBOX_SCAN_CAP} then", script
+                )
+                # Truncation is disclosed rather than silently changing results.
+                self.assertIn("if inboxCapHit then", script)
+
+    def test_get_awaiting_reply_all_time_has_no_cutoff_reference(self):
+        """days_back=0 means all time: cutoffDate is never defined, so the
+        generated script must not reference it (the count cap is the bound)."""
+        script = self._awaiting_reply_script(days_back=0)
+
+        self.assertNotIn("cutoffDate", script)
+        self.assertIn("set inboxScanned to inboxScanned + 1", script)
+
+    def test_get_awaiting_reply_matches_on_sender_before_indexing_subjects(self):
+        """Sender is the selective test, so it gates the O(idx) list indexing."""
+        script = self._awaiting_reply_script(days_back=14)
+
+        self.assertIn("repeat with inboxSender in inboxSenders", script)
+        sender_check = script.index("if inboxSender contains lowerRecipAddr then")
+        subject_index = script.index("set inboxSubj to item idx of inboxSubjects")
+        self.assertLess(sender_check, subject_index)
+
 
 if __name__ == "__main__":
     unittest.main()

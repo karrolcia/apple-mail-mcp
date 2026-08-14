@@ -25,6 +25,31 @@ _FLAG_COLOR_NAME_LIST = ", ".join(
     f'"{FLAG_COLOR_NAMES[i]}"' for i in sorted(FLAG_COLOR_NAMES)
 )
 
+# --- Bounds for the get_awaiting_reply inbox cross-reference scan ----------
+# Hard ceiling on how many inbox messages are walked. This bounds *cost*, not
+# correctness: it is the backstop for the days_back=0 (all-time) path and for
+# pathological mailboxes. Deliberately generous — a busy fortnight must not be
+# silently truncated, because a truncated cross-reference produces false
+# "awaiting reply" entries. Measured reference: a 9k-message Gmail inbox holds
+# ~410 messages in a 14-day window, and walking 1200 costs ~12s.
+INBOX_SCAN_CAP = 2000
+
+# Mail returns messages newest-first, so the first message older than the
+# cutoff normally means the rest are too. Exiting on the *first* old message
+# would silently truncate the whole scan if that ordering ever failed to hold
+# (yielding "everything is awaiting reply"), so require a short consecutive
+# run before believing we are past the window.
+INBOX_STALE_RUN_LIMIT = 10
+
+# Fetch subject+sender for in-window inbox messages only; out-of-window ones
+# cost a single `date received` round-trip and are skipped.
+_INBOX_COLLECT_PROPS = """                        set msgSubject to subject of aMessage
+                        set msgSender to sender of aMessage
+                        set baseSubject to my stripPrefixes(msgSubject)
+                        set lowerBase to my lowercase(baseSubject)
+                        set end of inboxSubjects to lowerBase
+                        set end of inboxSenders to my lowercase(msgSender)"""
+
 
 def _strip_subject_prefixes_script() -> str:
     """Return AppleScript handler to strip Re:/Fwd:/etc prefixes from a subject."""
@@ -93,6 +118,29 @@ def get_awaiting_reply(
     """
     escaped_account = escape_applescript(account)
 
+    # Body of the inbox-collection loop. A reply to a message sent within
+    # `days_back` must itself have arrived within `days_back`, so bounding the
+    # inbox scan to the same window loses nothing semantically. Unbounded, this
+    # loop fetched two properties for EVERY inbox message (~9k on a long-lived
+    # Gmail account => ~18k AppleEvent round-trips) and the tool timed out
+    # before returning anything. `get_needs_response` below uses the same
+    # bounded-scan idiom.
+    if days_back > 0:
+        inbox_collect_body = f"""
+                    set msgDate to date received of aMessage
+                    if msgDate < cutoffDate then
+                        set staleRun to staleRun + 1
+                        if staleRun > {INBOX_STALE_RUN_LIMIT} then exit repeat
+                    else
+                        set staleRun to 0
+{_INBOX_COLLECT_PROPS}
+                    end if"""
+    else:
+        # days_back=0 means "all time": no cutoff variable exists, so the
+        # count cap is the only bound. (Indentation here is cosmetic.)
+        inbox_collect_body = f"""
+{_INBOX_COLLECT_PROPS}"""
+
     noreply_filter = ""
     if exclude_noreply:
         noreply_filter = '''
@@ -132,19 +180,23 @@ def get_awaiting_reply(
             -- Get Inbox mailbox
             {inbox_mailbox_script("inboxMailbox", "targetAccount")}
 
-            -- Collect subjects from inbox for matching
+            -- Collect subjects from inbox for matching (bounded scan)
             set inboxSubjects to {{}}
             set inboxSenders to {{}}
             set inboxMessages to every message of inboxMailbox
+            set inboxScanned to 0
+            set staleRun to 0
+            set inboxCapHit to false
 
             repeat with aMessage in inboxMessages
+                set inboxScanned to inboxScanned + 1
+                if inboxScanned > {INBOX_SCAN_CAP} then
+                    set inboxCapHit to true
+                    exit repeat
+                end if
+
                 try
-                    set msgSubject to subject of aMessage
-                    set msgSender to sender of aMessage
-                    set baseSubject to my stripPrefixes(msgSubject)
-                    set lowerBase to my lowercase(baseSubject)
-                    set end of inboxSubjects to lowerBase
-                    set end of inboxSenders to my lowercase(msgSender)
+                    {inbox_collect_body}
                 end try
             end repeat
 
@@ -179,13 +231,16 @@ def get_awaiting_reply(
                             set lowerBase to my lowercase(baseSubject)
                             set lowerRecipAddr to my lowercase(recipAddr)
 
-                            -- Check if there is a reply in inbox from this recipient about this subject
+                            -- Check if there is a reply in inbox from this recipient about this subject.
+                            -- Sender is the more selective of the two tests, so it
+                            -- gates the O(idx) indexing into inboxSubjects. Same
+                            -- conjunction as before, just the cheaper order.
                             set foundReply to false
                             set idx to 1
-                            repeat with inboxSubj in inboxSubjects
-                                if inboxSubj contains lowerBase or lowerBase contains inboxSubj then
-                                    set inboxSender to item idx of inboxSenders
-                                    if inboxSender contains lowerRecipAddr then
+                            repeat with inboxSender in inboxSenders
+                                if inboxSender contains lowerRecipAddr then
+                                    set inboxSubj to item idx of inboxSubjects
+                                    if inboxSubj contains lowerBase or lowerBase contains inboxSubj then
                                         set foundReply to true
                                         exit repeat
                                     end if
@@ -210,6 +265,9 @@ def get_awaiting_reply(
 
             set outputText to outputText & "========================================" & return
             set outputText to outputText & "Found " & resultCount & " sent email(s) awaiting reply." & return
+            if inboxCapHit then
+                set outputText to outputText & "NOTE: inbox scan stopped at {INBOX_SCAN_CAP} messages; older inbox mail was not cross-referenced, so some entries above may already have replies." & return
+            end if
 
         on error errMsg
             return "Error: " & errMsg
