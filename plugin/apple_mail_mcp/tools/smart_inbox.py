@@ -27,12 +27,19 @@ _FLAG_COLOR_NAME_LIST = ", ".join(
 
 # --- Bounds for the get_awaiting_reply inbox cross-reference scan ----------
 # Hard ceiling on how many inbox messages are walked. This bounds *cost*, not
-# correctness: it is the backstop for the days_back=0 (all-time) path and for
-# pathological mailboxes. Deliberately generous — a busy fortnight must not be
-# silently truncated, because a truncated cross-reference produces false
-# "awaiting reply" entries. Measured reference: a 9k-message Gmail inbox holds
-# ~410 messages in a 14-day window, and walking 1200 costs ~12s.
-INBOX_SCAN_CAP = 2000
+# correctness, and it is sized to fit the run_applescript default timeout
+# (120s): an in-window message costs ~3 Mail round-trips plus 2 `lowercase`
+# shell calls, ~45-50ms, so a saturated scan is ~45-50s and leaves headroom for
+# the sent scan that follows. Measured reference: a 9k-message Gmail inbox
+# holds ~410 messages in a 14-day window (walking 1200 costs ~12s), so this is
+# ~2.4x the real fortnightly volume. Truncation is disclosed in the output
+# rather than silently narrowing the cross-reference, because a silently
+# truncated cross-reference yields false "awaiting reply" entries.
+#
+# Note this caps the *inbox* side only. On days_back=0 the sent loop below has
+# no date cutoff either and is bounded only by max_results; that is
+# pre-existing and not addressed here.
+INBOX_SCAN_CAP = 1000
 
 # Mail returns messages newest-first, so the first message older than the
 # cutoff normally means the rest are too. Exiting on the *first* old message
@@ -43,12 +50,21 @@ INBOX_STALE_RUN_LIMIT = 10
 
 # Fetch subject+sender for in-window inbox messages only; out-of-window ones
 # cost a single `date received` round-trip and are skipped.
+#
+# inboxSubjects and inboxSenders are parallel lists indexed in lockstep by the
+# matching loop, so every operation that can throw runs BEFORE either append.
+# Appending the subject and then throwing on the sender would shift every
+# later index by one, silently pairing each subject with the next message's
+# sender — which loses genuine reply matches and reports answered mail as
+# awaiting reply. (`lowercase` throws on `missing value`, so this is reachable
+# whenever Mail returns a message with no sender.)
 _INBOX_COLLECT_PROPS = """                        set msgSubject to subject of aMessage
                         set msgSender to sender of aMessage
                         set baseSubject to my stripPrefixes(msgSubject)
                         set lowerBase to my lowercase(baseSubject)
+                        set lowerSender to my lowercase(msgSender)
                         set end of inboxSubjects to lowerBase
-                        set end of inboxSenders to my lowercase(msgSender)"""
+                        set end of inboxSenders to lowerSender"""
 
 
 def _strip_subject_prefixes_script() -> str:
@@ -109,7 +125,7 @@ def get_awaiting_reply(
 
     Args:
         account: Account name (e.g., "Gmail", "Work", "Personal")
-        days_back: How many days back to check sent emails (default: 7)
+        days_back: How many days back to check sent emails (default: 7, 0 = all time)
         exclude_noreply: Skip emails sent to noreply/no-reply addresses (default: True)
         max_results: Maximum results to return (default: 20)
 
@@ -203,7 +219,6 @@ def get_awaiting_reply(
             -- Now scan sent emails
             set sentMessages to every message of sentMailbox
             set resultCount to 0
-            set checkedCount to 0
 
             repeat with aMessage in sentMessages
                 if resultCount >= {max_results} then exit repeat

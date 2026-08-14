@@ -526,9 +526,6 @@ class SmartInboxToolTests(unittest.TestCase):
         """
         script = self._awaiting_reply_script(days_back=14)
 
-        # date received is fetched first so out-of-window messages cost one
-        # round-trip instead of three.
-        self.assertIn("set msgDate to date received of aMessage", script)
         self.assertIn("if msgDate < cutoffDate then", script)
         self.assertIn(
             f"if staleRun > {smart_inbox_tools.INBOX_STALE_RUN_LIMIT} then exit repeat",
@@ -536,6 +533,46 @@ class SmartInboxToolTests(unittest.TestCase):
         )
         # Subject/sender are only fetched for in-window messages.
         self.assertIn("set end of inboxSubjects to lowerBase", script)
+
+        # `date received` must be fetched BEFORE subject/sender, so an
+        # out-of-window message costs one round-trip instead of three. That
+        # cost property is the whole point of the fix, so pin the order.
+        date_fetch = script.index("set msgDate to date received of aMessage")
+        subject_fetch = script.index("set msgSubject to subject of aMessage")
+        self.assertLess(date_fetch, subject_fetch)
+
+    def test_get_awaiting_reply_stale_run_counts_consecutive_only(self):
+        """The stale-run counter must reset on every in-window message.
+
+        Without the reset it becomes a cumulative count, and a mailbox with
+        INBOX_STALE_RUN_LIMIT out-of-window messages scattered anywhere in the
+        scan would truncate the entire cross-reference — reporting answered
+        mail as awaiting reply, the exact failure the tolerance exists to
+        prevent.
+        """
+        script = self._awaiting_reply_script(days_back=14)
+
+        self.assertIn("set staleRun to staleRun + 1", script)
+        # The reset lives in the else branch, i.e. after the increment.
+        increment = script.index("set staleRun to staleRun + 1")
+        reset = script.index("set staleRun to 0", increment)
+        self.assertGreater(reset, increment)
+        # ...and before the in-window property fetch it guards.
+        self.assertLess(reset, script.index("set msgSubject to subject of aMessage"))
+
+    def test_get_awaiting_reply_keeps_parallel_lists_index_aligned(self):
+        """Both appends must follow every operation that can throw.
+
+        inboxSubjects and inboxSenders are indexed in lockstep by the matching
+        loop. Appending a subject and then throwing on the sender would shift
+        every later index by one and silently mispair subjects with senders.
+        """
+        script = self._awaiting_reply_script(days_back=14)
+
+        last_throwing = script.index("set lowerSender to my lowercase(msgSender)")
+        first_append = script.index("set end of inboxSubjects to lowerBase")
+        self.assertLess(last_throwing, first_append)
+        self.assertIn("set end of inboxSenders to lowerSender", script)
 
     def test_get_awaiting_reply_caps_inbox_scan_count(self):
         """A hard count cap bounds cost independently of the date cutoff."""
