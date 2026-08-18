@@ -147,10 +147,11 @@ def get_awaiting_reply(
     # thread OPENER older than the window used to satisfy the match as well —
     # a sent "Re: Budget" was suppressed by the correspondent's original
     # "Budget" from 30 days ago, even where they never actually replied.
-    # Those sent messages are now reported. The change is one-directional
-    # (the reported set only grows, never shrinks) and the new entries are
-    # true positives for the question this tool asks: she sent last, so the
-    # reply is owed to her.
+    # Those sent messages are now reported. The set of QUALIFYING messages
+    # only grows, never shrinks — but the returned list is still capped at
+    # max_results, so a newly-unsuppressed message can push a previously
+    # returned one past the cap. The new entries are true positives for the
+    # question this tool asks: you sent last, so the reply is owed to you.
     if days_back > 0:
         inbox_collect_body = f"""
                     set msgDate to date received of aMessage

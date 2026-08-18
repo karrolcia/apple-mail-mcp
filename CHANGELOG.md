@@ -11,29 +11,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `get_awaiting_reply` no longer times out on large mailboxes. Its inbox
   cross-reference loop had no date cutoff, no count cap and no early exit, so
   it fetched `subject` and `sender` for *every* message in the inbox — about
-  18,000 AppleEvent round-trips on a 9,000-message account, which exceeded the
-  timeout before the tool returned anything. Accounts with small inboxes were
+  18,000 AppleEvent round-trips on a 9,000-message account, which exceeded
+  the timeout before the tool returned anything (#90). Small inboxes were
   unaffected, so the failure looked account-specific. The inbox scan is now
   bounded to the same date window as the sent scan, following the idiom
-  `get_needs_response` already used, with a hard count cap (`INBOX_SCAN_CAP`)
-  as a backstop for the `days_back=0` all-time path. Measured on the mailbox
-  that surfaced this: timing out before, ~16s after.
-  - The cutoff exit requires a short run of consecutive out-of-window messages
-    (`INBOX_STALE_RUN_LIMIT`) rather than exiting on the first one, so the
-    scan is not silently truncated into "everything is awaiting reply" should
-    Mail's newest-first ordering ever fail to hold.
-  - When the count cap is reached the output says so, rather than silently
-    narrowing the cross-reference.
-  - The reply-matching loop now tests the sender before indexing into
-    `inboxSubjects`. Same conjunction, but the selective test gates the
-    `item idx of` list access, which is O(idx) in AppleScript.
-  - Note one behaviour change: the matcher places no ordering constraint
-    between a sent message and the inbox message it matches, and both sides
-    are prefix-stripped, so a thread *opener* older than the window used to
-    satisfy the match. A sent `Re: Budget` was suppressed by the
-    correspondent's original `Budget` from 30 days earlier even where they
-    never replied. Those are now reported. The reported set only grows, never
-    shrinks.
+  `get_needs_response` already used, with a count cap (`INBOX_SCAN_CAP`) that
+  bounds both paths and is the only bound when `days_back=0`; reaching it is
+  disclosed in the output rather than silently narrowing the cross-reference.
+  The cutoff exit requires a run of consecutive out-of-window messages
+  (`INBOX_STALE_RUN_LIMIT`) rather than exiting on the first, so the scan
+  cannot be silently truncated into "everything is awaiting reply" should
+  Mail's newest-first ordering ever fail to hold. Measured on the mailbox
+  that surfaced this: timing out before, ~16s after. One behaviour change:
+  the matcher places no ordering constraint between a sent message and the
+  inbox message it matches, so a thread *opener* older than the window used
+  to suppress a sent reply to it; those are now reported. The qualifying set
+  only grows, never shrinks, though the returned list stays capped at
+  `max_results`.
 - Removed the redundant `plugin/commands/email-management.md` slash command.
   It shadowed `plugin/skills/email-management/` under the same
   `apple-mail:email-management` listing key, so every session showed two
